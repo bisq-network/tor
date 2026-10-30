@@ -49,14 +49,20 @@ tasks.register("verifyGithubActionsSecurity") {
         // Event data such as the title of a pull request comes from whoever opens it; inside a script it is shell code
         val eventExpressionRegex = Regex("""\$\{\{[^}]*\bgithub\.event\b""")
 
+        // As in verifyBuildEnvironment: 21.0.13+9-LTS and 21.0.13.0.3+1-LTS are both builds of 21.0.13
+        fun isBuildOf(runtimeVersion: String, javaVersion: String): Boolean = runCatching {
+            val updateNumbers = Runtime.Version.parse(javaVersion).version()
+            Runtime.Version.parse(runtimeVersion).version().take(updateNumbers.size) == updateNumbers
+        }.getOrDefault(false)
+
         if (expectedJavaVersion.isNullOrEmpty()) {
             violations += "Missing releaseBuild.javaVersion in gradle.properties"
         }
         if (expectedJavaRuntimeVersion.isNullOrEmpty()) {
             violations += "Missing releaseBuild.javaRuntimeVersion in gradle.properties"
-        } else if (expectedJavaVersion != null &&
-            !expectedJavaBuildVersion.orEmpty().startsWith("$expectedJavaVersion+")) {
-            violations += "releaseBuild.javaRuntimeVersion does not match releaseBuild.javaVersion"
+        } else if (!expectedJavaVersion.isNullOrEmpty() && !isBuildOf(expectedJavaRuntimeVersion, expectedJavaVersion)) {
+            violations += "releaseBuild.javaRuntimeVersion $expectedJavaRuntimeVersion is no build of " +
+                "releaseBuild.javaVersion $expectedJavaVersion"
         }
 
         fun cleanYamlScalar(value: String): String {

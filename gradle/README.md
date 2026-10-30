@@ -2,10 +2,24 @@
 
 ## Build JDK
 
-The CI workflow requests Zulu `21.0.13+9`, and `verifyBuildEnvironment` checks the Java update, runtime build, and
-Zulu distribution build pinned in `gradle.properties`. The update version alone is insufficient: Zulu `21.54.107`
-and `21.54.109` both belong to the Java 21.0.13 update family, but contain different JDK builds. Update the workflow,
-the pinned properties, and the toolchain URLs in `build-logic/toolchain-resolver` together when changing the build JDK.
+`gradle.properties` pins the Java update (`releaseBuild.javaVersion`) and the vendor (`releaseBuild.javaVendor`) of the
+JDK which runs Gradle, the same for every operating system. `verifyBuildEnvironment` (part of `check`) accepts every
+build of that update: the version numbers of the JDK must start with those of the pin, so `21.0.13.0.3+1` passes for
+`21.0.13`, and `21.0.13` fails for `21.0.1`. The pin holds version numbers only; `21` alone would accept every update
+of Java 21. The task logs the runtime version and the Zulu build of the JDK.
+
+Azul builds an update more than once, and an installer may offer only the latest build: Zulu `21.54.107`
+(`21.0.13+9`) and `21.54.109` (`21.0.13.0.3+1`) are both builds of 21.0.13, and the Homebrew cask `zulu@21` has only
+the latest. The two differ in their runtime (21.54.109 removes the emSign roots from `cacerts`), which this build does
+not ship, but not in what it compiles with: their javac and the classes it compiles against differ only in version
+strings.
+
+`releaseBuild.javaRuntimeVersion` is the one build which the CI workflows install. setup-java looks it up for the
+platform of each runner, so no build is listed per platform. `verifyGithubActionsSecurity` requires every `java-version`
+of a workflow to be this build, and this build to be one of `releaseBuild.javaVersion`.
+
+Update the workflows, the pinned properties, and the toolchain URLs in `build-logic/toolchain-resolver` together when
+changing the Java update.
 
 ## Gradle Wrapper Verification
 
