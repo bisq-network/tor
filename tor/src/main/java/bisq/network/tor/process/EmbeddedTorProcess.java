@@ -37,7 +37,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 /**
  * The process of the embedded Tor, or of sandy, which starts Tor in the sandbox. Internal: like the other classes which
@@ -60,6 +64,7 @@ public class EmbeddedTorProcess {
     // Written to the standard input of the process, which is then closed: the sandy policy of a sandboxed Tor
     private final Optional<byte[]> standardInput;
     private Optional<Process> process = Optional.empty();
+    private List<ProcessHandle> shutdownProcessTree = List.of();
 
     /**
      * @param workingDirPath      the directory of the bundle, so that Tor finds the programs of the pluggable
@@ -136,6 +141,7 @@ public class EmbeddedTorProcess {
             throw new TorStartupFailedException("Could not start " + program + ": " + e);
         }
         process = Optional.of(torProcess);
+        shutdownProcessTree = List.of();
         standardInput.ifPresent(input -> writeStandardInput(torProcess, input));
     }
 
@@ -208,36 +214,45 @@ public class EmbeddedTorProcess {
 
     public void shutdown() {
         process.ifPresent(process -> {
-            if (!process.isAlive()) {
-                return;
-            }
-
-            process.destroy();
+            List<ProcessHandle> tree = Stream.concat(shutdownProcessTree.stream(),
+                    Stream.concat(Stream.of(process.toHandle()), process.descendants())).distinct().toList();
+            if (process.isAlive()) process.destroy();
             try {
-                boolean exited = process.waitFor(3, TimeUnit.SECONDS);
-                if (!exited && process.isAlive()) {
-                    destroyForciblyAndWait(process);
-                }
+                if (process.isAlive() && !process.waitFor(3, TimeUnit.SECONDS)) process.destroyForcibly();
+                awaitExit(tree, 3);
             } catch (InterruptedException e) {
-                log.warn("Thread got interrupted at shutdown method", e);
-                if (process.isAlive()) {
-                    destroyForciblyAndWait(process);
-                }
                 Thread.currentThread().interrupt();
+                throw new CouldNotWaitForTorShutdownException(e);
+            } catch (TimeoutException e) {
+                tree.stream().filter(ProcessHandle::isAlive).forEach(ProcessHandle::destroyForcibly);
+                try {
+                    awaitExit(tree, 3);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new CouldNotWaitForTorShutdownException(interrupted);
+                } catch (TimeoutException timeout) {
+                    throw new CouldNotWaitForTorShutdownException("Tor or sandy subprocess did not exit after shutdown: " +
+                            tree.stream().filter(ProcessHandle::isAlive).map(ProcessHandle::pid).toList());
+                }
             }
         });
     }
 
-    private void destroyForciblyAndWait(Process process) {
-        process.destroyForcibly();
+    /** Snapshot before the controller closes: that close can make sandy exit before its children do. */
+    public void prepareForShutdown() {
+        if (shutdownProcessTree.isEmpty()) {
+            process.ifPresent(process -> shutdownProcessTree = Stream.concat(Stream.of(process.toHandle()),
+                    process.descendants()).toList());
+        }
+    }
+
+    private static void awaitExit(List<ProcessHandle> tree, int seconds)
+            throws InterruptedException, TimeoutException {
         try {
-            boolean exited = process.waitFor(3, TimeUnit.SECONDS);
-            if (!exited && process.isAlive()) {
-                log.warn("Tor process {} did not exit after being forcibly destroyed", process.pid());
-            }
-        } catch (InterruptedException e) {
-            log.warn("Thread got interrupted while waiting for forcibly destroyed Tor process to exit", e);
-            Thread.currentThread().interrupt();
+            CompletableFuture.allOf(tree.stream().map(ProcessHandle::onExit)
+                    .toArray(CompletableFuture[]::new)).get(seconds, TimeUnit.SECONDS);
+        } catch (ExecutionException e) {
+            throw new CouldNotWaitForTorShutdownException(e);
         }
     }
 

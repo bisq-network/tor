@@ -19,6 +19,7 @@ package bisq.network.tor.process;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
 import java.io.IOException;
@@ -29,8 +30,12 @@ import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class EmbeddedTorProcessTest {
@@ -142,5 +147,59 @@ class EmbeddedTorProcessTest {
         Files.setPosixFilePermissions(executable, PosixFilePermissions.fromString("rwx------"));
 
         assertThat(EmbeddedTorProcess.findExecutableInPath(relativeDirectory.toString(), "tor")).isEmpty();
+    }
+
+    @Test
+    @Timeout(20)
+    void shutdownWaitsForSandboxChildAfterLauncherExits() throws Exception {
+        assumeTrue(System.getProperty("os.name").toLowerCase().contains("win"));
+        Path marker = tempDir.resolve("child.pid");
+        Path release = tempDir.resolve("release");
+        String java = Path.of(System.getProperty("java.home"), "bin", "java.exe").toString();
+        String classPath = Path.of(ChildProcess.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toString();
+        var launcher = new EmbeddedTorProcess(List.of(java, "-cp", classPath,
+                ChildProcess.class.getName(), "parent", marker.toString(), release.toString()),
+                tempDir, environment -> {}, tempDir.resolve("stdout.log"), tempDir.resolve("stderr.log"));
+        launcher.start();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (!Files.exists(marker) && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(Files.exists(marker)).isTrue();
+        long childPid = Long.parseLong(Files.readString(marker));
+        ProcessHandle child = ProcessHandle.of(childPid).orElseThrow();
+        CompletableFuture<Void> stopped = CompletableFuture.runAsync(launcher::shutdown);
+        try {
+            assertThatThrownBy(() -> stopped.get(250, TimeUnit.MILLISECONDS))
+                    .isInstanceOf(TimeoutException.class);
+            assertThat(child.isAlive()).isTrue();
+            Files.createFile(release);
+            stopped.get(10, TimeUnit.SECONDS);
+            assertThat(child.isAlive()).isFalse();
+            assertThat(launcher.isAlive()).isFalse();
+            launcher.shutdown();
+        } finally {
+            if (!Files.exists(release)) Files.createFile(release);
+            child.destroyForcibly();
+            stopped.get(10, TimeUnit.SECONDS);
+        }
+    }
+
+    public static class ChildProcess {
+        public static void main(String[] args) throws Exception {
+            Path marker = Path.of(args[1]);
+            Path release = Path.of(args[2]);
+            if (args[0].equals("parent")) {
+                String java = Path.of(System.getProperty("java.home"), "bin", "java.exe").toString();
+                String classPath = Path.of(ChildProcess.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toString();
+                Process child = new ProcessBuilder(java, "-cp", classPath,
+                        ChildProcess.class.getName(), "child", marker.toString(), release.toString())
+                        .inheritIO().start();
+                Files.writeString(marker, Long.toString(child.pid()));
+                child.waitFor();
+            } else {
+                while (!Files.exists(release)) Thread.sleep(20);
+            }
+        }
     }
 }

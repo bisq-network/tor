@@ -899,25 +899,37 @@ public class TorService {
     private void stopTor(Optional<CompletableFuture<Boolean>> endedInitialization) {
         // Ends a running start at its next step: its commands and its wait for the bootstrap fail, and its wait for the
         // control port ends with the process.
-        stopControllerAndProcess();
+        RuntimeException failure = null;
+        try {
+            stopControllerAndProcess();
+        } catch (RuntimeException e) {
+            failure = e;
+        }
         // Until the start has ended, the fields belong to it, and it may still create a controller or a process.
         endedInitialization.ifPresent(start -> start.handle((result, throwable) -> result).join());
-        stopControllerAndProcess();
+        try {
+            stopControllerAndProcess();
+        } catch (RuntimeException e) {
+            if (failure == null) failure = e;
+            else failure.addSuppressed(e);
+        }
         torController = null;
         torProcess = Optional.empty();
         onionServiceTargets.close();
         torSocksProxyFactory = Optional.empty();
         torVersion = Optional.empty();
         sandboxStatus = TorSandboxStatus.NOT_STARTED;
+        if (failure != null) throw failure;
     }
 
     // Each step runs also when an earlier one fails, so that Tor is stopped in any case.
     private void stopControllerAndProcess() {
+        torProcess.ifPresent(EmbeddedTorProcess::prepareForShutdown);
         TorController controller = torController;
         if (controller != null) {
             runQuietly(controller::shutdown, "Shutdown of the Tor controller failed");
         }
-        torProcess.ifPresent(process -> runQuietly(process::shutdown, "Shutdown of the Tor process failed"));
+        torProcess.ifPresent(EmbeddedTorProcess::shutdown);
     }
 
     public CompletableFuture<String> publishOnionService(int localPort, int onionServicePort, OnionServiceKey onionServiceKey) {
