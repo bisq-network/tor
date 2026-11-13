@@ -44,6 +44,9 @@ import java.util.stream.Stream;
  * renames it to the data directory as its last step, so a migration that was interrupted runs again at the next start.
  * The step is idempotent: after the application deleted the data directory, it finds nothing to move and nothing which
  * the application owns to delete.
+ * <p>
+ * Files which an earlier version of the new layout wrote and this version does not are removed at every start
+ * ({@link #removeObsoleteEntries}). Deleting a missing file changes nothing, so no record of a done removal is needed.
  */
 @Slf4j
 public final class TorDirectoryMigration {
@@ -114,6 +117,25 @@ public final class TorDirectoryMigration {
         FileUtils.deleteRecursively(dataDirPath);
         Files.move(migrationDirPath, dataDirPath, StandardCopyOption.ATOMIC_MOVE);
         log.info("The Tor directory {} has separate binary and data directories now", baseDirPath.toAbsolutePath());
+    }
+
+    /**
+     * Deletes the files which earlier versions of the layout wrote and this version does not. A directory at such a
+     * path is not a file of an earlier version, so it is kept. A symbolic link is deleted, not its target.
+     */
+    public static void removeObsoleteEntries(TorDirectories directories) {
+        for (Path entry : directories.getObsoleteEntries()) {
+            if (Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS)) {
+                log.info("The Tor directory keeps the directory {}, which the Tor library does not know",
+                        entry.toAbsolutePath());
+                continue;
+            }
+            try {
+                Files.deleteIfExists(entry);
+            } catch (IOException e) {
+                log.warn("Could not delete {} of an earlier version of the Tor library", entry.toAbsolutePath(), e);
+            }
+        }
     }
 
     private static boolean isTorState(Path entry) {

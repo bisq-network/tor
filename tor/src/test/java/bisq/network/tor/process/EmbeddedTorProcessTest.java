@@ -55,10 +55,9 @@ class EmbeddedTorProcessTest {
     }
 
     private void assertShutdownStopsChild(boolean exitLauncherBeforeShutdown) throws Exception {
-        Path stdout = tempDir.resolve("stdout.log");
-        Path stderr = tempDir.resolve("stderr.log");
+        Path logPath = tempDir.resolve("tor.log");
         var process = new EmbeddedTorProcess(ProcessTreeFixture.command(tempDir, "launcher"), tempDir,
-                environment -> {}, stdout, stderr);
+                environment -> {}, logPath);
         ProcessHandle child = null;
         try {
             process.start();
@@ -83,14 +82,13 @@ class EmbeddedTorProcessTest {
             process.shutdown();
 
             assertThat(child.isAlive()).as("The launcher must not leave a running child").isFalse();
-            // The child inherited the log handles. Its port and the logs must be free for the next start.
+            // The child inherited the log handle. Its port and the log must be free for the next start.
             retryUntilReleased(() -> {
                 try (var listener = new ServerSocket()) {
                     listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port));
                 }
             });
-            retryUntilReleased(() -> Files.delete(stdout));
-            retryUntilReleased(() -> Files.delete(stderr));
+            retryUntilReleased(() -> Files.delete(logPath));
         } finally {
             if (child != null && child.isAlive()) {
                 child.destroyForcibly();
@@ -176,14 +174,14 @@ class EmbeddedTorProcessTest {
         assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
         // Tor finds the programs of the pluggable transports relative to its working directory.
         Path workingDir = Files.createDirectories(tempDir.resolve("Application Support"));
-        Path stdoutLogPath = tempDir.resolve("stdout.log");
+        Path logPath = tempDir.resolve("tor.log");
         var process = new EmbeddedTorProcess(List.of("/bin/sh", "-c", "pwd -P"), workingDir, environment -> {
-        }, stdoutLogPath, tempDir.resolve("stderr.log"));
+        }, logPath);
 
         process.start();
         process.waitUntilExited();
 
-        assertThat(Files.readString(stdoutLogPath).trim()).isEqualTo(workingDir.toRealPath().toString());
+        assertThat(Files.readString(logPath).trim()).isEqualTo(workingDir.toRealPath().toString());
     }
 
     @Test
@@ -192,11 +190,11 @@ class EmbeddedTorProcessTest {
         Path jvmStat = Path.of("/proc/self/stat");
         assumeTrue(Files.isReadable(jvmStat));
         assumeTrue(EmbeddedTorProcess.findExecutableInPath(System.getenv("PATH"), "setsid").isPresent());
-        Path stdoutLogPath = tempDir.resolve("tor-stdout.log");
+        Path logPath = tempDir.resolve("tor.log");
 
-        runToCompletion("echo $$ $(cut -d ' ' -f 6 /proc/$$/stat)", stdoutLogPath);
+        runToCompletion("echo $$ $(cut -d ' ' -f 6 /proc/$$/stat)", logPath);
 
-        String[] pidAndSession = Files.readString(stdoutLogPath).trim().split(" ");
+        String[] pidAndSession = Files.readString(logPath).trim().split(" ");
         assertThat(pidAndSession[1]).isEqualTo(pidAndSession[0]);
         assertThat(pidAndSession[1]).isNotEqualTo(Files.readString(jvmStat).split(" ")[5]);
     }
@@ -214,24 +212,70 @@ class EmbeddedTorProcessTest {
     @Test
     void theLogIsKeptAcrossStartsUpToASizeLimit() throws IOException {
         assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
-        Path stdoutLogPath = tempDir.resolve("tor-stdout.log");
+        Path logPath = tempDir.resolve("tor.log");
 
-        runToCompletion("echo first", stdoutLogPath);
-        runToCompletion("echo second", stdoutLogPath);
-        assertThat(Files.readAllLines(stdoutLogPath)).containsExactly("first", "second");
+        runToCompletion("echo first", logPath);
+        runToCompletion("echo second", logPath);
+        assertThat(Files.readAllLines(logPath)).containsExactly("first", "second");
 
-        try (RandomAccessFile file = new RandomAccessFile(stdoutLogPath.toFile(), "rw")) {
+        try (RandomAccessFile file = new RandomAccessFile(logPath.toFile(), "rw")) {
             file.setLength(10 * 1024 * 1024 + 1);
         }
-        runToCompletion("echo third", stdoutLogPath);
+        runToCompletion("echo third", logPath);
 
-        assertThat(Files.readAllLines(stdoutLogPath)).containsExactly("third");
-        assertThat(Files.size(tempDir.resolve("tor-stdout.log.1"))).isEqualTo(10 * 1024 * 1024 + 1);
+        assertThat(Files.readAllLines(logPath)).containsExactly("third");
+        assertThat(Files.size(tempDir.resolve("tor.log.1"))).isEqualTo(10 * 1024 * 1024 + 1);
     }
 
-    private void runToCompletion(String shellCommand, Path stdoutLogPath) {
+    @Test
+    void theStandardErrorGoesIntoTheLogInTheOrderOfWriting() throws IOException {
+        assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+        Path logPath = tempDir.resolve("tor.log");
+
+        runToCompletion("echo first; echo second >&2; echo third", logPath);
+
+        assertThat(Files.readAllLines(logPath)).containsExactly("first", "second", "third");
+    }
+
+    @Test
+    void theStartupDiagnosticsQuoteTheLogOfThisStart() throws IOException {
+        assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+        Path logPath = tempDir.resolve("tor.log");
+        runToCompletion("echo output of the start before", logPath);
+
+        // Tor writes the reason of a failed start to its standard output, sandy writes to the standard error
+        var process = new EmbeddedTorProcess(List.of("/bin/sh", "-c",
+                "echo \"[err] Reading config failed\"; echo \"sandy: run failed\" >&2; exit 1"), tempDir,
+                environment -> {
+                }, logPath);
+        process.start();
+        process.waitUntilExited();
+
+        assertThat(process.getStartupDiagnostics()).isEqualTo("exitCode=1" +
+                ", log=" + logPath.toAbsolutePath() +
+                ", log=[err] Reading config failed\nsandy: run failed");
+        assertThat(process.getStartupDiagnostics("log (by Tor)"))
+                .endsWith(", log (by Tor)=[err] Reading config failed\nsandy: run failed");
+    }
+
+    @Test
+    void theStartupDiagnosticsQuoteTheWholeLogIfItWasReplacedByAShorterOne() throws IOException {
+        assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+        Path logPath = tempDir.resolve("tor.log");
+        runToCompletion("echo a long output of the start before", logPath);
+        var process = new EmbeddedTorProcess(List.of("/bin/sh", "-c", "exit 1"), tempDir, environment -> {
+        }, logPath);
+        process.start();
+        process.waitUntilExited();
+
+        Files.writeString(logPath, "short");
+
+        assertThat(process.getStartupDiagnostics()).endsWith(", log=short");
+    }
+
+    private void runToCompletion(String shellCommand, Path logPath) {
         var process = new EmbeddedTorProcess(List.of("/bin/sh", "-c", shellCommand), tempDir, environment -> {
-        }, stdoutLogPath, tempDir.resolve("tor-stderr.log"));
+        }, logPath);
         process.start();
         process.waitUntilExited();
     }

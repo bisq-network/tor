@@ -582,7 +582,7 @@ class LocalEmbeddedTorStartTest {
 
         TorSandboxStatus status = torService.getSandboxStatus();
         assertThat(status.isSandboxed()).isTrue();
-        assertThat(Files.readString(torDir.resolve("tor-stdout.log"))).contains("Connected to pluggable transport");
+        assertThat(Files.readString(torDir.resolve("tor.log"))).contains("Connected to pluggable transport");
         assertThatNoTorOfThisTestRuns();
         assertThatNoTransportStartedSince(testStart);
         return status;

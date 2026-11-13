@@ -231,10 +231,11 @@ which shows that sandy ended the run before Tor ran gets the advice to turn the 
 sandboxed Tor before it answers on its control port is a failed start without that advice. Bisq chooses the ports of
 the policy and releases them before sandy binds them, so such a refusal of `sandy run`, and an exit 125 of
 `sandy check`, which tries the ports, can pass: the start then runs once more with other ports, within the same
-`initialize()`, and only a second refusal fails it. The error of a failed start quotes the end of `tor-stderr.log`. In
-the sandbox, sandy and Tor write that file and Tor can rewrite it, so the error names what Bisq knows itself (the exit
-status and the status record) first and labels the quote as written by sandy and by Tor in its sandbox and not verified
-by Bisq. In the same way an error which quotes a reply of Tor on its control connection, or a field of one of its events,
+`initialize()`, and only a second refusal fails it. The error of a failed start names `tor.log` and quotes the part
+of it which this start wrote: Tor writes the reason of a failed start to its standard output, sandy and the system
+write theirs to the standard error, and `tor.log` holds both. In the sandbox, sandy and Tor write this file and Tor can
+rewrite it, so the error names what Bisq knows itself (the exit status and the status record) first and labels the
+quote as written by sandy and by Tor in its sandbox and not verified by Bisq. In the same way an error which quotes a reply of Tor on its control connection, or a field of one of its events,
 says what Bisq knows first and then labels the quote "Tor reported (not verified by Bisq)".
 
 On Linux sandy refuses to run as root or with capabilities, because Tor would keep them in the sandbox (Landlock does
@@ -320,9 +321,13 @@ sandbox has all rights of the user. So before each start `data-mode` in the Tor 
 the sandbox, and before Tor starts without the sandbox on a `data/` which a sandboxed Tor may have written (the record
 says so, or it is missing while `data/` existed before the start), Bisq clears `data/`. Tor then selects new entry
 guards and downloads the directory documents again. A start in the sandbox keeps `data/`. Tor logs to its
-standard output, which Bisq writes to `tor-stdout.log`. Before a start of the embedded Tor, `TorDirectoryMigration`
-moves the state of Tor from the layout before into `data/`, deletes the files of the old layout which it knows, and
-keeps everything else, such as the onion service key of Bisq 1 in `hiddenservice/`.
+standard output. Bisq writes the standard output and the standard error of Tor, or of sandy, in the order in which
+they were written to `tor.log`, which it keeps across starts and moves to `tor.log.1` before a start when it exceeds
+10 MiB. Before a start of the embedded Tor, `TorDirectoryMigration` moves the state of Tor from the layout before into
+`data/`, deletes the files of the old layout which it knows, and keeps everything else, such as the onion service key
+of Bisq 1 in `hiddenservice/`. At every start it also deletes the logs of versions up to 1.0.1, `tor-stdout.log`,
+`tor-stdout.log.1` and `tor-stderr.log`; a file which is missing needs no deletion, so no record of the deletion is
+kept.
 
 `EmbeddedTorProcess` starts Tor, or sandy, with the `setsid` program of the system in a session of its own, if the
 system has one, as Linux does. A Ctrl+C in the terminal of Bisq then does not reach Tor, which would otherwise exit at

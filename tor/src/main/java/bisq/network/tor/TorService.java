@@ -98,10 +98,10 @@ public class TorService {
     private static final String SOCKS5_PROXY = "Socks5Proxy";
     private static final String MAX_MEM_IN_QUEUES = "MaxMemInQueues";
     private static final int STATUS_DLL_INIT_FAILED = 0xC0000142;
-    // sandy and the Tor which it runs write the standard error of a sandboxed start, and Tor can rewrite the file, so a
-    // quote of it can be the text of a compromised Tor.
-    private static final String SANDBOXED_STDERR_LABEL =
-            "stderr (written by sandy and by Tor in its sandbox, not verified by Bisq)";
+    // sandy and the Tor which it runs write the log of a sandboxed start, so a quote of it can be the text of a
+    // compromised Tor.
+    private static final String SANDBOXED_LOG_LABEL =
+            "log (written by sandy and by Tor in its sandbox, not verified by Bisq)";
     // Environment variable to not launch the embedded Tor process
     public static final String TOR_SKIP_LAUNCH = "TOR_SKIP_LAUNCH";
 
@@ -711,8 +711,7 @@ public class TorService {
                         platformServices.getMyPid())),
                 torDirectories.getBinaryDirPath(),
                 Sandy::removeLoaderVariables,
-                torDirectories.getStdoutLogPath(),
-                torDirectories.getStderrLogPath(),
+                torDirectories.getLogPath(),
                 Optional.of(Sandy.policyInput(sandboxedStart.policy())));
     }
 
@@ -753,8 +752,7 @@ public class TorService {
         return new EmbeddedTorProcess(createTorCommand(torBinaryPath),
                 torDirectories.getBinaryDirPath(),
                 environmentAdjuster,
-                torDirectories.getStdoutLogPath(),
-                torDirectories.getStderrLogPath());
+                torDirectories.getLogPath());
     }
 
     private List<String> createTorCommand(Path torBinaryPath) {
@@ -880,6 +878,7 @@ public class TorService {
     private boolean prepareTorDirectories() {
         try {
             boolean isNewDataDirectory = !Files.isDirectory(torDirectories.getDataDirPath(), LinkOption.NOFOLLOW_LINKS);
+            TorDirectoryMigration.removeObsoleteEntries(torDirectories);
             TorDirectoryMigration.migrateIfNeeded(torDirectories, TorBinaryZipExtractor::readTopLevelNames);
             boolean posixPermissionsAllowed = platformServices.supportsPosixPermissions();
             FileUtils.createDirectories(torDirectories.getDataDirPath(), posixPermissionsAllowed);
@@ -1271,7 +1270,7 @@ public class TorService {
     /**
      * @param sandboxedRun present if sandy starts Tor. sandy can refuse the start after a passed check, for example
      *                     when another process took a port of the policy in between. It exits with its own status and
-     *                     prints the reason on standard error, which is in the stderr log. Tor can exit with that
+     *                     prints the reason on standard error, which is in the log. Tor can exit with that
      *                     status too, so only a status record which shows that sandy ended the run before Tor ran
      *                     gets the advice to turn the sandbox off.
      */
@@ -1313,24 +1312,24 @@ public class TorService {
         } catch (IOException e) {
             return new IOException("Embedded Tor exited before it answered on its control port, and Bisq could not " +
                     "read the status record of sandy, which tells whether Tor ran: " + e.getMessage() + ". " +
-                    embeddedTorProcess.getStartupDiagnostics(SANDBOXED_STDERR_LABEL));
+                    embeddedTorProcess.getStartupDiagnostics(SANDBOXED_LOG_LABEL));
         }
         int exitCode = embeddedTorProcess.getExitCode().orElseThrow();
-        // The facts which Bisq knows come before the quote of the standard error, which Tor can have written.
+        // The facts which Bisq knows come before the quote of the log, which Tor can have written.
         String record = "statusRecord=[" + statusRecord.map(SandyStatusRecord::toString).orElse("none") + "], ";
         if (Sandy.endedBeforeTheProgramRan(sandboxedRun.staysParent(), exitCode, statusRecord)) {
             // Without a cause, so that the reason and the hint are the root cause which Bisq 2 shows
             throw new SandyRefusalException("sandy did not start Tor. " + record +
-                    embeddedTorProcess.getStartupDiagnostics(SANDBOXED_STDERR_LABEL), sandboxedRun.optOutHint());
+                    embeddedTorProcess.getStartupDiagnostics(SANDBOXED_LOG_LABEL), sandboxedRun.optOutHint());
         }
         return new IOException("Embedded Tor exited before it answered on its control port." +
                 windowsSessionHint(Optional.of(exitCode)) + " " + record +
-                embeddedTorProcess.getStartupDiagnostics(SANDBOXED_STDERR_LABEL));
+                embeddedTorProcess.getStartupDiagnostics(SANDBOXED_LOG_LABEL));
     }
 
     private static String startupDiagnostics(EmbeddedTorProcess embeddedTorProcess, boolean isSandboxed) {
         return isSandboxed ?
-                embeddedTorProcess.getStartupDiagnostics(SANDBOXED_STDERR_LABEL) :
+                embeddedTorProcess.getStartupDiagnostics(SANDBOXED_LOG_LABEL) :
                 embeddedTorProcess.getStartupDiagnostics();
     }
 

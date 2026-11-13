@@ -192,6 +192,39 @@ class TorDirectoryMigrationTest {
         assertThat(read(outside.resolve("state"))).isEqualTo("file outside");
     }
 
+    // Installations which already have the layout of the sandbox get no migration, so the logs of versions up to 1.0.1
+    // are removed at every start.
+    @Test
+    void removesTheLogsOfEarlierVersionsAtEveryStart() throws IOException {
+        Path base = tempDirPath.resolve("tor");
+        TorDirectories directories = new TorDirectories(base);
+        write(base.resolve("tor-stdout.log"), "log of 1.0.1");
+        write(base.resolve("tor-stdout.log.1"), "earlier log of 1.0.1");
+        write(base.resolve("tor-stderr.log"), "sandy: run failed");
+        write(directories.getLogPath(), "log");
+        Files.createDirectories(directories.getDataDirPath());
+
+        TorDirectoryMigration.removeObsoleteEntries(directories);
+        TorDirectoryMigration.removeObsoleteEntries(directories);
+
+        assertThat(namesIn(base)).containsExactlyInAnyOrder("tor.log", "data");
+    }
+
+    @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void removesALinkAtAnObsoletePathButNotItsTargetAndKeepsADirectory() throws IOException {
+        Path base = tempDirPath.resolve("tor");
+        Path outside = tempDirPath.resolve("outside");
+        write(outside.resolve("file"), "file outside");
+        Files.createDirectories(base.resolve("tor-stderr.log"));
+        Files.createSymbolicLink(base.resolve("tor-stdout.log"), outside.resolve("file"));
+
+        TorDirectoryMigration.removeObsoleteEntries(new TorDirectories(base));
+
+        assertThat(namesIn(base)).containsExactly("tor-stderr.log");
+        assertThat(read(outside.resolve("file"))).isEqualTo("file outside");
+    }
+
     private static void write(Path path, String content) throws IOException {
         Files.createDirectories(path.getParent());
         Files.write(path, content.getBytes(StandardCharsets.UTF_8));

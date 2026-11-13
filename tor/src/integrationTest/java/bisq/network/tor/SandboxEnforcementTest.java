@@ -357,8 +357,7 @@ class SandboxEnforcementTest {
                 program),
                 policy.workingDirPath(),
                 Sandy::removeLoaderVariables,
-                directories.getStdoutLogPath(),
-                directories.getStderrLogPath(),
+                directories.getLogPath(),
                 Optional.of(Sandy.policyInput(policy)));
         torProcesses.add(process);
         process.start();
@@ -393,8 +392,7 @@ class SandboxEnforcementTest {
                 torCommand),
                 policy.workingDirPath(),
                 Sandy::removeLoaderVariables,
-                directories.getStdoutLogPath(),
-                directories.getStderrLogPath(),
+                directories.getLogPath(),
                 Optional.of(Sandy.policyInput(policy)));
         torProcesses.add(tor);
         tor.start();
