@@ -80,7 +80,7 @@ class LocalTorAuthenticationTest {
                 "-f", torrc.toString(),
                 "--defaults-torrc", emptyDefaults.toString())
                 .redirectErrorStream(true)
-                .redirectOutput(torDir.resolve("tor-stdout.log").toFile());
+                .redirectOutput(torDir.resolve("tor.log").toFile());
         BundledTorLibraries.applyToEnvironment(processBuilder.environment(), directories.getBinaryDirPath());
         torProcess = processBuilder.start();
 

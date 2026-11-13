@@ -52,16 +52,18 @@ public class EmbeddedTorProcess {
     public static final String ARG_OWNER_PID = "__OwningControllerProcess";
     private static final int MAX_LOG_SNIPPET_BYTES = 4096;
     // Above this size, the log of the last starts is moved to a single backup before the next start.
-    private static final long MAX_STDOUT_LOG_BYTES = 10 * 1024 * 1024;
+    private static final long MAX_LOG_BYTES = 10 * 1024 * 1024;
 
     private final List<String> command;
     private final Path workingDirPath;
     private final Consumer<Map<String, String>> environmentAdjuster;
-    private final Path stdoutLogPath;
-    private final Path stderrLogPath;
+    // The standard output and the standard error of the process, in the order in which it wrote them
+    private final Path logPath;
     // Written to the standard input of the process, which is then closed: the sandy policy of a sandboxed Tor
     private final Optional<byte[]> standardInput;
     private volatile Optional<Process> process = Optional.empty();
+    // The size of the log before this start, where the output of this start begins
+    private volatile long logStartPosition;
     private final Set<ProcessHandle> descendants = ConcurrentHashMap.newKeySet();
 
     /**
@@ -72,28 +74,25 @@ public class EmbeddedTorProcess {
     public EmbeddedTorProcess(List<String> command,
                               Path workingDirPath,
                               Consumer<Map<String, String>> environmentAdjuster,
-                              Path stdoutLogPath,
-                              Path stderrLogPath) {
-        this(command, workingDirPath, environmentAdjuster, stdoutLogPath, stderrLogPath, Optional.empty());
+                              Path logPath) {
+        this(command, workingDirPath, environmentAdjuster, logPath, Optional.empty());
     }
 
     /**
      * @param standardInput written to the standard input of the process, which is then closed. sandy reads its
      *                      policy there ({@code --policy -}) and gives the program the null device instead. If the
      *                      process ends before it read the input, {@link #start} returns, and its exit status and
-     *                      standard error tell why.
+     *                      log tell why.
      */
     public EmbeddedTorProcess(List<String> command,
                               Path workingDirPath,
                               Consumer<Map<String, String>> environmentAdjuster,
-                              Path stdoutLogPath,
-                              Path stderrLogPath,
+                              Path logPath,
                               Optional<byte[]> standardInput) {
         this.command = List.copyOf(command);
         this.workingDirPath = workingDirPath;
         this.environmentAdjuster = environmentAdjuster;
-        this.stdoutLogPath = stdoutLogPath;
-        this.stderrLogPath = stderrLogPath;
+        this.logPath = logPath;
         this.standardInput = standardInput.map(byte[]::clone);
     }
 
@@ -125,10 +124,13 @@ public class EmbeddedTorProcess {
         var processBuilder = new ProcessBuilder(inSessionOfItsOwn(command, setsidPath));
         processBuilder.directory(workingDirPath.toFile());
         environmentAdjuster.accept(processBuilder.environment());
-        processBuilder.redirectError(stderrLogPath.toFile());
-        // The log of Tor. It is kept across starts, up to a size limit.
-        rotateStdoutLogIfTooLarge();
-        processBuilder.redirectOutput(ProcessBuilder.Redirect.appendTo(stdoutLogPath.toFile()));
+        // Tor logs to its standard output. sandy, and the system when it cannot start a program, write to the standard
+        // error. One file keeps both in the order in which they were written. It is kept across starts, up to a size
+        // limit.
+        rotateLogIfTooLarge();
+        logStartPosition = sizeOrZero(logPath);
+        processBuilder.redirectErrorStream(true);
+        processBuilder.redirectOutput(ProcessBuilder.Redirect.appendTo(logPath.toFile()));
 
         Process torProcess;
         try {
@@ -144,7 +146,7 @@ public class EmbeddedTorProcess {
 
     /**
      * A process which ends before it read its whole input, for example sandy, which refused an argument, makes the
-     * write fail with a broken pipe. The exit status and the standard error of the process tell why
+     * write fail with a broken pipe. The exit status and the log of the process tell why
      * ({@link #getStartupDiagnostics}), so the caller reports the ended process instead of the failed write.
      */
     private static void writeStandardInput(Process process, byte[] input) {
@@ -175,19 +177,27 @@ public class EmbeddedTorProcess {
     /**
      * @return the file next to the log of Tor to which the log is moved before a start when it exceeds its size limit
      */
-    public static Path rotatedStdoutLogPath(Path stdoutLogPath) {
-        return stdoutLogPath.resolveSibling(stdoutLogPath.getFileName() + ".1");
+    public static Path rotatedLogPath(Path logPath) {
+        return logPath.resolveSibling(logPath.getFileName() + ".1");
     }
 
-    private void rotateStdoutLogIfTooLarge() {
+    private void rotateLogIfTooLarge() {
         try {
-            if (Files.isRegularFile(stdoutLogPath, LinkOption.NOFOLLOW_LINKS) &&
-                    Files.size(stdoutLogPath) > MAX_STDOUT_LOG_BYTES) {
-                Path backupPath = rotatedStdoutLogPath(stdoutLogPath);
-                Files.move(stdoutLogPath, backupPath, StandardCopyOption.REPLACE_EXISTING);
+            if (Files.isRegularFile(logPath, LinkOption.NOFOLLOW_LINKS) &&
+                    Files.size(logPath) > MAX_LOG_BYTES) {
+                Path backupPath = rotatedLogPath(logPath);
+                Files.move(logPath, backupPath, StandardCopyOption.REPLACE_EXISTING);
             }
         } catch (IOException e) {
-            log.warn("Could not move the Tor log {} to a backup", stdoutLogPath, e);
+            log.warn("Could not move the Tor log {} to a backup", logPath, e);
+        }
+    }
+
+    private static long sizeOrZero(Path path) {
+        try {
+            return Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) ? Files.size(path) : 0;
+        } catch (IOException e) {
+            return 0;
         }
     }
 
@@ -312,20 +322,24 @@ public class EmbeddedTorProcess {
     }
 
     public String getStartupDiagnostics() {
-        return getStartupDiagnostics("stderr");
+        return getStartupDiagnostics("log");
     }
 
     /**
-     * @param stderrLabel introduces the end of the standard error log, which the diagnostics quote last, for example
-     *                    to say who wrote it where the caller cannot vouch for its content
+     * The diagnostics name the log and quote its end after the facts which Bisq knows itself. The log holds the reason
+     * of a failed start: Tor logs to its standard output, and sandy and the system write to the standard error. The
+     * quote covers only the output of this start, because the log is kept across starts.
+     *
+     * @param logLabel introduces the quote of the log, for example to say who wrote it where the caller cannot vouch
+     *                 for its content
      */
-    public String getStartupDiagnostics(String stderrLabel) {
+    public String getStartupDiagnostics(String logLabel) {
         String exitCode = getExitCode()
                 .map(String::valueOf)
                 .orElseGet(() -> isAlive() ? "still running" : "not started");
         return "exitCode=" + exitCode +
-                ", stderrLog=" + stderrLogPath.toAbsolutePath() +
-                ", " + stderrLabel + "=" + readLogSnippet(stderrLogPath);
+                ", log=" + logPath.toAbsolutePath() +
+                ", " + logLabel + "=" + readLogSnippet(logPath, logStartPosition);
     }
 
     /**
@@ -361,16 +375,21 @@ public class EmbeddedTorProcess {
         }
     }
 
-    private String readLogSnippet(Path logPath) {
+    /**
+     * @param startPosition where the part to quote begins. If the file is shorter, it was replaced, and the quote
+     *                      begins at its start.
+     */
+    private static String readLogSnippet(Path logPath, long startPosition) {
         try {
             if (!Files.exists(logPath)) {
                 return "<missing>";
             }
             long fileSize = Files.size(logPath);
-            int bytesToRead = (int) Math.min(fileSize, MAX_LOG_SNIPPET_BYTES);
+            long start = startPosition <= fileSize ? startPosition : 0;
+            int bytesToRead = (int) Math.min(fileSize - start, MAX_LOG_SNIPPET_BYTES);
             ByteBuffer buffer = ByteBuffer.allocate(bytesToRead);
             try (var channel = Files.newByteChannel(logPath, StandardOpenOption.READ)) {
-                channel.position(Math.max(0, fileSize - bytesToRead));
+                channel.position(fileSize - bytesToRead);
                 while (buffer.hasRemaining() && channel.read(buffer) != -1) {
                     // Read until the requested tail buffer is filled or EOF is reached.
                 }

@@ -90,7 +90,7 @@ class TorServiceStartFailureTest {
                 .hasMessageContaining("Could not bind to 127.0.0.1:9050");
     }
 
-    // A compromised Tor chooses its exit status and its standard error, but it cannot write the status record.
+    // A compromised Tor chooses its exit status and its log, but it cannot write the status record.
     @Test
     void aTorWhichExitsWithTheStatusOfSandyGetsNoAdviceToTurnTheSandboxOff() {
         EmbeddedTorProcess process = start(writeStatusRecord("level base\\npid 4711\\n") +
@@ -107,7 +107,7 @@ class TorServiceStartFailureTest {
 
     // The quote comes last, after the facts which Bisq knows, and says that Tor in its sandbox can have written it.
     @Test
-    void theStandardErrorOfASandboxedStartIsQuotedAsTextWhichBisqDidNotVerify() {
+    void theLogOfASandboxedStartIsQuotedAsTextWhichBisqDidNotVerify() {
         EmbeddedTorProcess refused = start(writeStatusRecord("level base\\nfailed\\n") +
                 "echo 'sandy: run failed' >&2; exit 125");
         assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, refused, sandboxedRun()))
@@ -121,18 +121,29 @@ class TorServiceStartFailureTest {
                 .satisfies(e -> assertThatTheQuoteIsLabeledAndLast(e.getMessage(), "Could not bind"));
     }
 
+    // Tor writes the reason of a failed start, for example an unknown option of the torrc, to its standard output.
+    @Test
+    void theReasonWhichTorWritesToItsStandardOutputIsQuoted() {
+        EmbeddedTorProcess exited = start(writeStatusRecord("level base\\npid 4711\\nexited 1\\n") +
+                "echo \"[err] Reading config failed--see warnings above.\"; exit 1");
+        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, exited, sandboxedRun()))
+                .hasMessageContaining(", log=" + tempDir.resolve("tor.log").toAbsolutePath())
+                .satisfies(e -> assertThatTheQuoteIsLabeledAndLast(e.getMessage(),
+                        "[err] Reading config failed--see warnings above."));
+    }
+
     // Without the sandbox Tor has all the rights of Bisq, so a label would add nothing.
     @Test
-    void theStandardErrorOfAStartWithoutTheSandboxIsQuotedAsBefore() {
-        EmbeddedTorProcess process = start("echo 'Could not bind' >&2; exit 1");
+    void theLogOfAStartWithoutTheSandboxIsQuotedWithoutALabel() {
+        EmbeddedTorProcess process = start("echo '[err] Reading config failed'; echo 'Could not bind' >&2; exit 1");
 
         assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, process, Optional.empty()))
-                .hasMessageEndingWith(", stderr=Could not bind")
+                .hasMessageEndingWith(", log=[err] Reading config failed\nCould not bind")
                 .hasMessageNotContaining("not verified");
     }
 
     private static void assertThatTheQuoteIsLabeledAndLast(String message, String quote) {
-        String label = "stderr (written by sandy and by Tor in its sandbox, not verified by Bisq)=";
+        String label = "log (written by sandy and by Tor in its sandbox, not verified by Bisq)=";
         assertThat(message).endsWith(label + quote);
         assertThat(message.indexOf("exitCode=")).isLessThan(message.indexOf(label));
         assertThat(message.indexOf("statusRecord=")).isLessThan(message.indexOf(label));
@@ -234,7 +245,7 @@ class TorServiceStartFailureTest {
     void aProgramWhichCannotStartIsTheRootCause() {
         var process = new EmbeddedTorProcess(List.of(tempDir.resolve("missing").toString()), tempDir.resolve("missing"),
                 environment -> {
-                }, tempDir.resolve("tor-stdout.log"), tempDir.resolve("tor-stderr.log"));
+                }, tempDir.resolve("tor.log"));
 
         assertThatThrownBy(process::start)
                 .isInstanceOf(TorStartupFailedException.class)
@@ -282,7 +293,7 @@ class TorServiceStartFailureTest {
 
     private EmbeddedTorProcess start(String shellCommand, Optional<byte[]> standardInput) {
         var process = new EmbeddedTorProcess(List.of("/bin/sh", "-c", shellCommand), tempDir, environment -> {
-        }, tempDir.resolve("tor-stdout.log"), tempDir.resolve("tor-stderr.log"), standardInput);
+        }, tempDir.resolve("tor.log"), standardInput);
         process.start();
         process.waitUntilExited();
         return process;

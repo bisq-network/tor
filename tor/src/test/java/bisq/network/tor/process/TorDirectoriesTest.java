@@ -47,8 +47,7 @@ class TorDirectoriesTest {
         assertThat(directories.getSandyStatusRecordPath()).isEqualTo(BASE.resolve("sandy").resolve("run-status"));
         assertThat(directories.getDataModePath()).isEqualTo(BASE.resolve("data-mode"));
         assertThat(directories.getTorrcPath()).isEqualTo(BASE.resolve("torrc"));
-        assertThat(directories.getStdoutLogPath()).isEqualTo(BASE.resolve("tor-stdout.log"));
-        assertThat(directories.getStderrLogPath()).isEqualTo(BASE.resolve("tor-stderr.log"));
+        assertThat(directories.getLogPath()).isEqualTo(BASE.resolve("tor.log"));
         assertThat(directories.getExternalTorConfigPath()).isEqualTo(BASE.resolve("external_tor.config"));
         assertThat(directories.getOpenSslConfigPath()).isEqualTo(BASE.resolve("openssl.cnf"));
         assertThat(directories.getBundledGeoIpFilePath()).isEqualTo(bin.resolve("geoip"));
@@ -61,9 +60,17 @@ class TorDirectoriesTest {
     // Bisq 2 leaves the logs of Tor out of its backup and opens them.
     @Test
     void theEarlierLogOfTorLiesNextToItsLog() {
-        assertThat(directories.getRotatedStdoutLogPath()).isEqualTo(BASE.resolve("tor-stdout.log.1"));
-        assertThat(directories.getRotatedStdoutLogPath())
-                .isEqualTo(EmbeddedTorProcess.rotatedStdoutLogPath(directories.getStdoutLogPath()));
+        assertThat(directories.getRotatedLogPath()).isEqualTo(BASE.resolve("tor.log.1"));
+        assertThat(directories.getRotatedLogPath())
+                .isEqualTo(EmbeddedTorProcess.rotatedLogPath(directories.getLogPath()));
+    }
+
+    // Up to version 1.0.1 the standard output and the standard error of Tor went to separate files.
+    @Test
+    void theLogsOfEarlierVersionsAreObsoleteAndNoPartOfTheLayout() {
+        assertThat(directories.getObsoleteEntries()).containsExactly(BASE.resolve("tor-stdout.log"),
+                BASE.resolve("tor-stdout.log.1"), BASE.resolve("tor-stderr.log"));
+        assertThat(directories.getLayoutEntries()).doesNotContainAnyElementsOf(directories.getObsoleteEntries());
     }
 
     // The migration of the Tor directory takes the names of the layout from here, so a path of TorDirectories directly in
@@ -87,7 +94,7 @@ class TorDirectoriesTest {
     void nothingWhichBisqTrustsLiesInTheDataDirectory() {
         for (Path path : List.of(directories.getBinaryDirPath(), directories.getSandyDirPath(),
                 directories.getSandyStatusRecordPath(), directories.getDataModePath(),
-                directories.getTorrcPath(), directories.getStdoutLogPath(), directories.getStderrLogPath(),
+                directories.getTorrcPath(), directories.getLogPath(), directories.getRotatedLogPath(),
                 directories.getExternalTorConfigPath(), directories.getOpenSslConfigPath())) {
             assertThat(path.startsWith(directories.getDataDirPath())).as(path.toString()).isFalse();
         }

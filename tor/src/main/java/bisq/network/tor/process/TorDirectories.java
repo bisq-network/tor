@@ -56,9 +56,8 @@ public final class TorDirectories {
     // The DataDirectory of Tor.
     private final Path dataDirPath;
     private final Path torrcPath;
-    // The log of Tor (Tor logs to its standard output).
-    private final Path stdoutLogPath;
-    private final Path stderrLogPath;
+    // The log of Tor: the standard output, to which Tor logs, and the standard error of Tor or of sandy
+    private final Path logPath;
     // The sandy binary, outside every path which Tor may write
     private final Path sandyDirPath;
     private final Path externalTorConfigPath;
@@ -68,8 +67,7 @@ public final class TorDirectories {
         binaryDirPath = baseDirPath.resolve(BINARY_DIR_NAME);
         dataDirPath = baseDirPath.resolve(DATA_DIR_NAME);
         torrcPath = baseDirPath.resolve("torrc");
-        stdoutLogPath = baseDirPath.resolve("tor-stdout.log");
-        stderrLogPath = baseDirPath.resolve("tor-stderr.log");
+        logPath = baseDirPath.resolve("tor.log");
         sandyDirPath = baseDirPath.resolve(SANDY_DIR_NAME);
         externalTorConfigPath = baseDirPath.resolve(EXTERNAL_TOR_CONFIG_FILE_NAME);
     }
@@ -108,8 +106,8 @@ public final class TorDirectories {
      * @return the earlier log of Tor, which {@link EmbeddedTorProcess} moves aside when the log exceeds its size limit.
      * An application which shows, backs up or leaves out the logs of Tor takes their paths from here.
      */
-    public Path getRotatedStdoutLogPath() {
-        return EmbeddedTorProcess.rotatedStdoutLogPath(stdoutLogPath);
+    public Path getRotatedLogPath() {
+        return EmbeddedTorProcess.rotatedLogPath(logPath);
     }
 
     /**
@@ -117,8 +115,19 @@ public final class TorDirectories {
      * files of the application, for example the onion service key of Bisq 1 in {@code hiddenservice}.
      */
     List<Path> getLayoutEntries() {
-        return List.of(binaryDirPath, dataDirPath, sandyDirPath, torrcPath, getOpenSslConfigPath(), stdoutLogPath,
-                getRotatedStdoutLogPath(), stderrLogPath, externalTorConfigPath, getDataModePath());
+        return List.of(binaryDirPath, dataDirPath, sandyDirPath, torrcPath, getOpenSslConfigPath(), logPath,
+                getRotatedLogPath(), externalTorConfigPath, getDataModePath());
+    }
+
+    /**
+     * @return the files which earlier versions of this layout wrote and this version does not: up to version 1.0.1,
+     * the standard output of Tor went to {@code tor-stdout.log} (moved to {@code tor-stdout.log.1} above the size
+     * limit) and the standard error to {@code tor-stderr.log}. {@link #getLogPath()} replaces them.
+     */
+    List<Path> getObsoleteEntries() {
+        Path stdoutLogPath = baseDirPath.resolve("tor-stdout.log");
+        return List.of(stdoutLogPath, EmbeddedTorProcess.rotatedLogPath(stdoutLogPath),
+                baseDirPath.resolve("tor-stderr.log"));
     }
 
     // The GeoIP files of the bundled Tor, which the bundle installs next to the binary.

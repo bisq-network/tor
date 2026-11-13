@@ -88,7 +88,7 @@ final class ExternalTorProcess implements AutoCloseable {
         String ownerPid = String.valueOf(ProcessHandle.current().pid());
         Process process = new ProcessBuilder(EmbeddedTorProcess.torCommand(torBinaryPath, torrcPath, ownerPid))
                 .redirectErrorStream(true)
-                .redirectOutput(torDirPath.resolve("tor-stdout.log").toFile())
+                .redirectOutput(torDirPath.resolve("tor.log").toFile())
                 .start();
         try {
             return new ExternalTorProcess(process, readControlPort(controlPortFilePath, process), authentication,
